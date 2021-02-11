@@ -17,7 +17,7 @@
 
 ## Introduction
 
-Proxyee is a JAVA written HTTP proxy server library that supports HTTP, HTTPS, Websocket protocols, and supports MIMT (Man-in-the-middle), which can capture and tamper with HTTP, HTTPS packet.
+Proxyee is a JAVA written HTTP proxy server library that supports HTTP, HTTPS, Websocket protocols, and supports MITM (Man-in-the-middle), which can capture and tamper with HTTP, HTTPS packet.
 
 ## Usage
 
@@ -25,7 +25,7 @@ Proxyee is a JAVA written HTTP proxy server library that supports HTTP, HTTPS, W
 <dependency>
     <groupId>com.github.monkeywie</groupId>
     <artifactId>proxyee</artifactId>
-    <version>1.2.3</version>
+    <version>1.3.3</version>
 </dependency>
 ```
 
@@ -37,9 +37,9 @@ Proxyee is a JAVA written HTTP proxy server library that supports HTTP, HTTPS, W
 new HttpProxyServer().start(9999);
 ```
 
-- MIMT HTTP proxy
+- MITM HTTP proxy
 
-The following is a demonstration of a MIMT attack that modifies the response header and response body when visiting the Baidu homepage, as shown in the figure below：
+The following is a demonstration of a MITM attack that modifies the response header and response body when visiting the Baidu homepage, as shown in the figure below：
 
 ![20200724152245](https://raw.githubusercontent.com/monkeyWie/pic-bed/master/proxyee/20200724152245.png)
 
@@ -65,7 +65,7 @@ new HttpProxyServer()
           }
 
           @Override
-          public void handelResponse(HttpRequest httpRequest, FullHttpResponse httpResponse, HttpProxyInterceptPipeline pipeline) {
+          public void handleResponse(HttpRequest httpRequest, FullHttpResponse httpResponse, HttpProxyInterceptPipeline pipeline) {
             //Print raw packet
             System.out.println(httpResponse.toString());
             System.out.println(httpResponse.content().toString(Charset.defaultCharset()));
@@ -115,8 +115,31 @@ openssl req -sha256 -new -x509 -days 365 -key ca.key -out ca.crt \
 
 Copy `ca.crt` and `ca_private.der` to the project src/resources/ after generation, or implement the HttpProxyCACertFactory interface to custom load the root certificate and private key.
 
-## Pre-proxy support
+## Authentication
 
+Currently only basic authentication are supported.
+
+- Basic
+
+```java
+// curl -i -x 127.0.0.1:9999 -U admin:123456 https://www.baidu.com
+HttpProxyServerConfig config = new HttpProxyServerConfig();
+        config.setAuthenticationProvider(new BasicHttpProxyAuthenticationProvider() {
+            @Override
+            protected boolean authenticate(String usr, String pwd) {
+                return "admin".equals(usr) && "123456".equals(pwd);
+            }
+        });
+new HttpProxyServer()
+        .serverConfig(config)
+        .start(9999);
+```
+
+- Custom
+
+Customize authentication by implementing the `HttpProxyAuthenticationProvider` interface.
+
+## Pre-proxy support
 
 Pre-proxy can be set,support http,socks4,socks5 protocol.
 

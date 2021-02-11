@@ -10,6 +10,7 @@ import com.github.monkeywie.proxyee.proxy.ProxyConfig;
 import com.github.monkeywie.proxyee.proxy.ProxyHandleFactory;
 import com.github.monkeywie.proxyee.server.HttpProxyServer;
 import com.github.monkeywie.proxyee.server.HttpProxyServerConfig;
+import com.github.monkeywie.proxyee.server.auth.HttpProxyAuthenticationProvider;
 import com.github.monkeywie.proxyee.util.ProtoUtil;
 import com.github.monkeywie.proxyee.util.ProtoUtil.RequestProto;
 import io.netty.bootstrap.Bootstrap;
@@ -28,19 +29,19 @@ import java.net.URL;
 import java.util.LinkedList;
 import java.util.List;
 
-public class HttpProxyServerHandle extends ChannelInboundHandlerAdapter {
+public class HttpProxyServerHandler extends ChannelInboundHandlerAdapter {
 
     private ChannelFuture cf;
     private String host;
     private int port;
     private boolean isSsl = false;
     private int status = 0;
-    private HttpProxyServerConfig serverConfig;
-    private ProxyConfig proxyConfig;
-    private HttpProxyInterceptInitializer interceptInitializer;
+    private final HttpProxyServerConfig serverConfig;
+    private final ProxyConfig proxyConfig;
+    private final HttpProxyInterceptInitializer interceptInitializer;
     private HttpProxyInterceptPipeline interceptPipeline;
-    private HttpTunnelIntercept tunnelIntercept;
-    private HttpProxyExceptionHandle exceptionHandle;
+    private final HttpTunnelIntercept tunnelIntercept;
+    private final HttpProxyExceptionHandle exceptionHandle;
     private List requestList;
     private boolean isConnect;
 
@@ -56,7 +57,7 @@ public class HttpProxyServerHandle extends ChannelInboundHandlerAdapter {
         return exceptionHandle;
     }
 
-    public HttpProxyServerHandle(HttpProxyServerConfig serverConfig, HttpProxyInterceptInitializer interceptInitializer, HttpTunnelIntercept tunnelIntercept, ProxyConfig proxyConfig, HttpProxyExceptionHandle exceptionHandle) {
+    public HttpProxyServerHandler(HttpProxyServerConfig serverConfig, HttpProxyInterceptInitializer interceptInitializer, HttpTunnelIntercept tunnelIntercept, ProxyConfig proxyConfig, HttpProxyExceptionHandle exceptionHandle) {
         this.serverConfig = serverConfig;
         this.proxyConfig = proxyConfig;
         this.interceptInitializer = interceptInitializer;
@@ -72,6 +73,11 @@ public class HttpProxyServerHandle extends ChannelInboundHandlerAdapter {
             if (status == 0) {
                 RequestProto requestProto = ProtoUtil.getRequestProto(request);
                 if (requestProto == null) { // bad request
+                    ctx.channel().close();
+                    return;
+                }
+                if (!authenticate(ctx, request)) {
+                    status = 2;
                     ctx.channel().close();
                     return;
                 }
@@ -139,13 +145,28 @@ public class HttpProxyServerHandle extends ChannelInboundHandlerAdapter {
         exceptionHandle.beforeCatch(ctx.channel(), cause);
     }
 
+    private boolean authenticate(ChannelHandlerContext ctx, HttpRequest request) {
+        if (serverConfig.getAuthenticationProvider() != null) {
+            HttpProxyAuthenticationProvider authProvider = serverConfig.getAuthenticationProvider();
+            if (!authProvider.authenticate(request.headers().get(HttpHeaderNames.PROXY_AUTHORIZATION))) {
+                HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpProxyServer.UNAUTHORIZED);
+                response.headers().set(HttpHeaderNames.PROXY_AUTHENTICATE, authProvider.authType() + " realm=\"" + authProvider.authRealm() + "\"");
+                ctx.writeAndFlush(response);
+                return false;
+            }
+        }
+        return true;
+    }
+
     private void handleProxyData(Channel channel, Object msg, boolean isHttp) throws Exception {
         if (cf == null) {
             // connection异常 还有HttpContent进来，不转发
             if (isHttp && !(msg instanceof HttpRequest)) {
                 return;
             }
-            ProxyHandler proxyHandler = ProxyHandleFactory.build(proxyConfig);
+            // by default we use the proxy config set in the pipeline
+            ProxyHandler proxyHandler = ProxyHandleFactory.build(
+                    interceptPipeline == null || interceptPipeline.getProxyConfig() == null ? proxyConfig : interceptPipeline.getProxyConfig());
             /*
              * 添加SSL client hello的Server Name Indication extension(SNI扩展) 有些服务器对于client
              * hello不带SNI扩展时会直接返回Received fatal alert: handshake_failure(握手错误)
@@ -178,9 +199,11 @@ public class HttpProxyServerHandle extends ChannelInboundHandlerAdapter {
             bootstrap.group(serverConfig.getProxyLoopGroup()) // 注册线程池
                     .channel(NioSocketChannel.class) // 使用NioSocketChannel来作为连接用的channel类
                     .handler(channelInitializer);
-            if (proxyConfig != null) {
+            if (proxyHandler != null) {
                 // 代理服务器解析DNS和连接
                 bootstrap.resolver(NoopAddressResolverGroup.INSTANCE);
+            } else {
+                bootstrap.resolver(serverConfig.resolver());
             }
             requestList = new LinkedList();
             cf = bootstrap.connect(requestProto.getHost(), requestProto.getPort());
